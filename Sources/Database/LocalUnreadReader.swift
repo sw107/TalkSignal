@@ -28,13 +28,20 @@ struct RoomUnread: Equatable {
 // Restrict actual SQL reads to the room name/count and name-join columns.
 // No message table, bodies, attachments, network, key output or DB writes.
 private let allowedColumns: [String: Set<String>] = [
-    "NTChatRoom": ["chatName", "countOfNewMessage", "directChatMemberUserId"],
-    "NTUser": ["userId", "linkId", "displayName", "friendNickName", "nickName"]
+    "NTChatRoom": ["chatId", "linkId", "chatName", "countOfNewMessage", "directChatMemberUserId", "displayMemberIds"],
+    "NTUser": ["userId", "linkId", "displayName", "friendNickName", "nickName"],
+    "NTChatMeta": ["chatId", "type", "content"], // fixed SELECT restricts rows to title type 3
+    "NTOpenLink": ["linkId", "linkName"],
+    "NTChatContext": ["userId"]
 ]
 func unreadAuthorizer(_ context: UnsafeMutableRawPointer?, _ action: Int32,
                       _ first: UnsafePointer<CChar>?, _ second: UnsafePointer<CChar>?,
                       _ database: UnsafePointer<CChar>?, _ trigger: UnsafePointer<CChar>?) -> Int32 {
     if action == SQLITE_SELECT { return SQLITE_OK }
+    // SQLite's INTEGER PRIMARY KEY scan also requests a table-row visit with
+    // an empty column and nil database. This grants no extra value columns.
+    if action == SQLITE_READ, first.map({ String(cString: $0) }) == "NTChatContext",
+       second.map({ String(cString: $0) }) == "", database == nil { return SQLITE_OK }
     if action == SQLITE_READ, let first, let second,
        allowedColumns[String(cString: first)]?.contains(String(cString: second)) == true,
        database.map({ String(cString: $0) }) == "main" { return SQLITE_OK }
@@ -222,33 +229,85 @@ final class LocalUnreadReader {
         throw UnreadError.key
     }
     static func queryRooms(_ db: OpaquePointer, target: String) throws -> [RoomUnread] {
-        // Installed before preparing any user-data query. Only this fixed SELECT
-        // is supported; no arbitrary SQL interface or message-reading function.
         sqlite3_set_authorizer(db, unreadAuthorizer, nil)
+        let target = RoomNames.normalized(target)
+        guard !target.isEmpty else { return [] }
+        // Only room-title metadata (type 3), never notices or message content.
         let sql = """
-            SELECT COALESCE(NULLIF(r.chatName,''),NULLIF(u.displayName,''),NULLIF(u.friendNickName,''),u.nickName),
-                   r.countOfNewMessage
+            SELECT r.chatId, r.chatName, m.content, o.linkName,
+                   COALESCE(NULLIF(u.displayName,''),NULLIF(u.friendNickName,''),u.nickName),
+                   r.countOfNewMessage, r.displayMemberIds, r.linkId
             FROM NTChatRoom r
             LEFT JOIN NTUser u ON r.directChatMemberUserId=u.userId AND u.linkId=0
+            LEFT JOIN NTChatMeta m ON m.chatId=r.chatId AND m.type=3
+            LEFT JOIN NTOpenLink o ON o.linkId=r.linkId
+            WHERE r.chatId != -1
             """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw UnreadError.schema }
         defer { sqlite3_finalize(statement) }
-        let target = target.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
-        var result: [RoomUnread] = []
+        func text(_ column: Int32) -> String? {
+            sqlite3_column_text(statement, column).map { String(cString: $0) }
+        }
+        struct Match: Equatable { let names: RoomNames; let unread: Int? }
+        var matches: [String: Match] = [:]
+        var memberNames: [String: String]?
+        var selfID: Int64?
         var step = sqlite3_step(statement)
         while step == SQLITE_ROW {
-            if let value = sqlite3_column_text(statement, 0) {
-                let name = String(cString: value)
-                if name.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping == target {
-                    let count = sqlite3_column_type(statement, 1) == SQLITE_INTEGER ? Int(sqlite3_column_int64(statement, 1)) : -1
-                    result.append(RoomUnread(name: name, unread: count >= 0 ? count : nil))
+            let room = text(1), title = text(2), link = text(3), person = text(4)
+            var generated: String?
+            if RoomNames.resolve(room: room, title: title, openLink: link, person: person, members: nil) == nil,
+               sqlite3_column_type(statement, 6) == SQLITE_BLOB,
+               let bytes = sqlite3_column_blob(statement, 6) {
+                if memberNames == nil {
+                    let naming = try readMemberNames(db)
+                    memberNames = naming.names; selfID = naming.selfID
                 }
+                let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 6)))
+                if let ids = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [NSNumber] {
+                    let members = Set(ids.map(\.int64Value)).filter { $0 != selfID }.sorted()
+                    let roomLink = sqlite3_column_int64(statement, 7)
+                    let names = members.compactMap { memberNames?["\(roomLink):\($0)"] }
+                    // Never manufacture a partial room name from missing member information.
+                    if !names.isEmpty && names.count == members.count { generated = names.joined(separator: ", ") }
+                }
+            }
+            if let names = RoomNames.resolve(room: room, title: title, openLink: link, person: person, members: generated), names.aliases.contains(target) {
+                let count = sqlite3_column_type(statement, 5) == SQLITE_INTEGER ? Int(sqlite3_column_int64(statement, 5)) : -1
+                let match = Match(names: names, unread: count >= 0 ? count : nil)
+                let id = "\(sqlite3_column_int64(statement, 0)):\(sqlite3_column_int64(statement, 7))"
+                if let old = matches[id], old != match { throw UnreadError.query }
+                matches[id] = match // join duplication cannot double the unread count
             }
             step = sqlite3_step(statement)
         }
         guard step == SQLITE_DONE else { throw UnreadError.query }
-        return result
+        return matches.keys.sorted().compactMap { id in
+            matches[id].map { RoomUnread(name: $0.names.display, unread: $0.unread) }
+        }
+    }
+    private static func readMemberNames(_ db: OpaquePointer) throws -> (names: [String: String], selfID: Int64?) {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT userId FROM NTChatContext", -1, &stmt, nil) == SQLITE_OK else { throw UnreadError.schema }
+        var own = Set<Int64>()
+        var step = sqlite3_step(stmt)
+        while step == SQLITE_ROW { own.insert(sqlite3_column_int64(stmt, 0)); step = sqlite3_step(stmt) }
+        sqlite3_finalize(stmt)
+        guard step == SQLITE_DONE, own.count <= 1 else { throw UnreadError.query }
+        guard sqlite3_prepare_v2(db, "SELECT userId,linkId,COALESCE(NULLIF(displayName,''),NULLIF(friendNickName,''),nickName) FROM NTUser", -1, &stmt, nil) == SQLITE_OK else { throw UnreadError.schema }
+        defer { sqlite3_finalize(stmt) }
+        var names: [String: String] = [:]
+        step = sqlite3_step(stmt)
+        while step == SQLITE_ROW {
+            if let value = sqlite3_column_text(stmt, 2) {
+                let name = RoomNames.normalized(String(cString: value))
+                if !name.isEmpty { names["\(sqlite3_column_int64(stmt, 1)):\(sqlite3_column_int64(stmt, 0))"] = name }
+            }
+            step = sqlite3_step(stmt)
+        }
+        guard step == SQLITE_DONE else { throw UnreadError.query }
+        return (names, own.first)
     }
     // Observe account markers so a running app does not keep using a previous account's key.
     // Values remain in memory. No message or authentication-token fields are inspected.

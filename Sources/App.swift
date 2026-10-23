@@ -89,14 +89,14 @@ final class SettingsController: NSWindowController {
         add(label("소중한 연락, 메뉴바에서", size: 23, weight: .bold))
         add(label("지정한 채팅방에 안 읽은 메시지가 있으면 분홍색 점이 켜져요.", color: .secondaryLabelColor))
         stack.setCustomSpacing(24, after: stack.arrangedSubviews.last!)
-        add(label("감지할 사람 · 채팅방 이름", weight: .semibold))
-        name.placeholderString = "카카오톡 채팅 목록에 보이는 이름"
+        add(label("개인 이름 또는 채팅방 이름", weight: .semibold))
+        name.placeholderString = "1:1 상대 이름 또는 단체 채팅방 이름"
         name.setAccessibilityIdentifier("targetName")
         name.setAccessibilityLabel("감지할 채팅방 이름")
         name.font = .systemFont(ofSize: 14)
         name.heightAnchor.constraint(equalToConstant: 30).isActive = true
         add(name)
-        add(label("띄어쓰기와 이모지까지 똑같이 입력해 주세요. 같은 이름의 채팅방이 여러 개라면 카톡에서 이름을 구분해 주세요.", size: 11, color: .secondaryLabelColor))
+        add(label("개인 이름은 1:1 채팅, 단체방 이름은 그 방 전체의 안 읽음을 확인해요. 띄어쓰기·이모지까지 같게 입력해 주세요. 같은 이름이 여러 방에 해당하면 감지를 중단해요.", size: 11, color: .secondaryLabelColor))
         stack.setCustomSpacing(20, after: stack.arrangedSubviews.last!)
         add(label("메뉴바 아이콘", weight: .semibold))
         icons.addItems(withTitles: IconChoice.all.map(\.title))
