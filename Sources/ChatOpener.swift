@@ -46,6 +46,8 @@ final class ChatOpener {
     }
     static func open(name: String, applicationURL: URL, isCurrent: @escaping () -> Bool,
                      completion: @escaping (String?) -> Void) {
+        // Explicitly hand activation from the accessory app to KakaoTalk.
+        NSApp.yieldActivation(toApplicationWithBundleIdentifier: bundleID)
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration) { application, error in
@@ -60,15 +62,18 @@ final class ChatOpener {
                 func ensureCurrent() throws {
                     let current = DispatchQueue.main.sync { isCurrent() }
                     guard current else { throw Failure(message: "설정이 바뀌어 채팅방 열기를 취소했어요") }
-                    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-                        throw Failure(message: "다른 앱으로 전환되어 채팅방 열기를 멈췄어요. 다시 클릭해 주세요.")
+                    guard !application.isTerminated,
+                          NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).contains(where: { $0.processIdentifier == pid }) else {
+                        throw Failure(message: "카카오톡이 종료되거나 다시 실행되어 열기를 취소했어요")
                     }
+                    // Every key event is addressed to this PID. Global foreground changes
+                    // during activation do not redirect input and must not cancel the request.
                 }
                 func mainWindow() -> AXUIElement? { windows().first { text($0, kAXIdentifierAttribute) == "Main Window" } }
                 do {
                     // Wait for Launch Services to restore a closed/minimized main window.
                     for _ in 0..<30 {
-                        if mainWindow() != nil && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { break }
+                        if mainWindow() != nil { break }
                         Thread.sleep(forTimeInterval: 0.1)
                     }
                     try ensureCurrent()
@@ -77,6 +82,14 @@ final class ChatOpener {
                     guard AXUIElementPerformAction(main, kAXRaiseAction as CFString) == .success else {
                         throw Failure(message: "카톡 채팅 목록을 앞으로 가져오지 못했어요")
                     }
+                    var mainFocused = false
+                    for _ in 0..<15 {
+                        if let focused = value(root, kAXFocusedWindowAttribute), CFEqual(focused, main) {
+                            mainFocused = true; break
+                        }
+                        Thread.sleep(forTimeInterval: 0.1)
+                    }
+                    guard mainFocused else { throw Failure(message: "카톡 메인 창의 입력 위치를 확인하지 못했어요") }
                     // Cmd-2 and Cmd-F operate on the main window; no message editor typing.
                     try key(19, flags: .maskCommand, pid: pid)
                     Thread.sleep(forTimeInterval: 0.15)
