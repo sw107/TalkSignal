@@ -1,106 +1,47 @@
 import AppKit
-import ApplicationServices
 
-// All methods must run on one serial queue. This reader never launches, activates,
-// raises, scrolls or changes KakaoTalk, and never reads message preview text areas.
+// All calls except stop() are confined to the app's serial database queue.
 final class ChatReader {
-    static let bundleID = "com.kakao.KakaoTalkMac"
-    private var cachedRow: AXUIElement?
-    private var cachedPID: pid_t?
-    private var cachedTarget = ""
-    private var deadline = Date.distantFuture
-    private enum Failure: Error { case ax, deadline }
+    private var database = LocalUnreadReader()
+    private var processID: pid_t?
+    private var failedSearches = 0
+    private var paused: SignalState?
 
-    private func get(_ element: AXUIElement, _ key: String) throws -> CFTypeRef {
-        guard Date() < deadline else { throw Failure.deadline }
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success,
-              let value else { throw Failure.ax }
-        return value
-    }
-    private func text(_ element: AXUIElement, _ key: String) throws -> String {
-        guard let value = try get(element, key) as? String else { throw Failure.ax }
-        return value
-    }
-    private func children(_ element: AXUIElement) throws -> [AXUIElement] {
-        guard let result = try get(element, kAXChildrenAttribute) as? [AXUIElement] else { throw Failure.ax }
-        return result
-    }
-    private func fields(_ row: AXUIElement) throws -> [ChatField] {
-        var result: [ChatField] = []
-        for cell in try children(row) {
-            guard try text(cell, kAXRoleAttribute) == kAXCellRole else { continue }
-            for node in try children(cell) {
-                // Do not descend into the message-preview scroll area.
-                guard try text(node, kAXRoleAttribute) == kAXStaticTextRole else { continue }
-                let value = try text(node, kAXValueAttribute)
-                // AXIdentifier is optional on unread badges.
-                let identifier = (try? text(node, kAXIdentifierAttribute)) ?? ""
-                result.append(ChatField(value: value, identifier: identifier))
-            }
-        }
-        return result
-    }
-    private func findTable(_ element: AXUIElement, depth: Int = 0) throws -> AXUIElement? {
-        guard depth < 8 else { return nil }
-        let role = try text(element, kAXRoleAttribute)
-        if role == kAXTableRole { return element }
-        guard [kAXWindowRole, kAXScrollAreaRole, kAXGroupRole, kAXSplitGroupRole].contains(role) else { return nil }
-        for child in try children(element) {
-            if let table = try findTable(child, depth: depth + 1) { return table }
-        }
-        return nil
+    func stop() { database.stop() }
+    func retry() { paused = nil; failedSearches = 0 }
+
+    static func state(for rooms: [RoomUnread]) -> SignalState {
+        guard !rooms.isEmpty else { return .missing }
+        guard rooms.count == 1 else { return .failure("같은 이름의 채팅방이 여러 개라 구분할 수 없어요") }
+        guard let count = rooms[0].unread, count >= 0 else { return .unavailable }
+        return .ready(UnreadCount(count: count, isLowerBound: false))
     }
 
-    func read(target: String) -> SignalState {
-        let target = ChatParser.normalized(target)
-        guard !target.isEmpty else { return .unconfigured }
-        guard AXIsProcessTrusted() else { return .permission }
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleID).first else {
-            cachedRow = nil
-            return .stopped
+    func read(target: String, progress: @escaping (String) -> Void = { _ in }) -> SignalState {
+        guard !ChatParser.normalized(target).isEmpty else { return .unconfigured }
+        let pid = NSRunningApplication.runningApplications(withBundleIdentifier: "com.kakao.KakaoTalkMac").first?.processIdentifier
+        if pid != processID {
+            database = LocalUnreadReader()
+            processID = pid
+            retry()
         }
-        if cachedPID != app.processIdentifier || cachedTarget != target {
-            cachedRow = nil
-            cachedPID = app.processIdentifier
-            cachedTarget = target
-        }
-        deadline = Date().addingTimeInterval(5)
-        let root = AXUIElementCreateApplication(app.processIdentifier)
-        AXUIElementSetMessagingTimeout(root, 0.25)
+        guard pid != nil else { return .stopped }
+        if let paused { return paused }
         do {
-            guard let windows = try get(root, kAXWindowsAttribute) as? [AXUIElement] else { return .unavailable }
-            guard let main = windows.first(where: { (try? text($0, kAXIdentifierAttribute)) == "Main Window" }) else {
-                cachedRow = nil
-                return .closed
+            let rooms = try database.read(target: target, progress: progress)
+            failedSearches = 0
+            return Self.state(for: rooms)
+        } catch let error as UnreadError {
+            if error == .access { return .permission }
+            let state = SignalState.failure(error.message)
+            // Bound expensive discovery attempts; permission/transient query failures retry automatically.
+            if error == .identity {
+                failedSearches += 1
+                if failedSearches >= 3 { paused = state }
+            } else if [.key, .schema, .ambiguousAccount, .noDatabase].contains(error) {
+                paused = state
             }
-            // Verify the chat list is still exposed even when using the cached row.
-            guard let table = try findTable(main) else { cachedRow = nil; return .unavailable }
-            if let cachedRow, let items = try? fields(cachedRow),
-               let name = items.first?.value, ChatParser.matches(name, target: target),
-               let count = ChatParser.unread(items) {
-                return .ready(count)
-            }
-            cachedRow = nil
-            let rows: [AXUIElement]
-            if let exposedRows = try? get(table, kAXRowsAttribute) as? [AXUIElement] {
-                rows = exposedRows
-            } else {
-                rows = try children(table)
-            }
-            for row in rows {
-                guard try text(row, kAXRoleAttribute) == kAXRowRole else { continue }
-                let items = try fields(row)
-                guard let name = items.first?.value, ChatParser.matches(name, target: target) else { continue }
-                guard let count = ChatParser.unread(items) else { return .unavailable }
-                cachedRow = row
-                return .ready(count)
-            }
-            return .missing
-        } catch {
-            cachedRow = nil
-            return .unavailable
-        }
+            return state
+        } catch { return .unavailable }
     }
 }
-

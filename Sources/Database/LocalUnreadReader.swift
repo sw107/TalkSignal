@@ -8,7 +8,7 @@ enum UnreadError: Error, Equatable {
     case access, noDatabase, identity, ambiguousAccount, key, schema, query, cancelled
     var message: String {
         switch self {
-        case .access: return "카톡 데이터 접근 불가 · 이 검사 앱의 전체 디스크 접근을 확인해 주세요"
+        case .access: return "카톡 데이터 접근 불가 · 이 앱의 전체 디스크 접근을 확인해 주세요"
         case .noDatabase: return "지원하는 카톡 로컬 DB를 찾지 못했어요"
         case .identity: return "현재 계정 식별값을 찾지 못했어요 · 추가 진단 필요"
         case .ambiguousAccount: return "여러 계정 정보가 있어 현재 계정을 확정할 수 없어요"
@@ -47,6 +47,7 @@ final class LocalUnreadReader {
     private(set) var diagnostics: [String: Any] = [:]
     private let base = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Containers/com.kakao.KakaoTalkMac/Data/Library")
+    private var accountMarker: [String]?
     private var dbPath: String?
     private var key: String? // In-memory only, never arguments, report, log or disk.
     private var identitySearchStart = 1
@@ -249,12 +250,43 @@ final class LocalUnreadReader {
         guard step == SQLITE_DONE else { throw UnreadError.query }
         return result
     }
+    // Observe account markers so a running app does not keep using a previous account's key.
+    // Values remain in memory. No message or authentication-token fields are inspected.
+    private func currentAccountMarker() throws -> [String] {
+        let urls: [URL]
+        do { urls = try FileManager.default.contentsOfDirectory(at: base.appendingPathComponent("Preferences"), includingPropertiesForKeys: nil) }
+        catch { throw UnreadError.access }
+        var markers: [String] = []
+        for url in urls where url.lastPathComponent.hasPrefix("com.kakao.KakaoTalkMac") && url.pathExtension == "plist" {
+            let data: Data
+            do { data = try Data(contentsOf: url) } catch { throw UnreadError.access }
+            guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { throw UnreadError.query }
+            for (name, value) in plist where name.hasPrefix("DESIGNATEDFRIENDSREVISION:") {
+                if let revision = value as? NSNumber, revision.intValue != 0 { markers.append(name) }
+            }
+            for name in ["userId", "user_id", "KAKAO_USER_ID", "userID"] {
+                if let value = plist[name] as? NSNumber { markers.append(name + ":" + value.stringValue) }
+                else if let value = plist[name] as? String { markers.append(name + ":" + value) }
+            }
+        }
+        return Array(Set(markers)).sorted()
+    }
     func read(target: String, progress: @escaping (String) -> Void) throws -> [RoomUnread] {
         try checkCancellation()
+        let marker = try currentAccountMarker()
+        if marker != accountMarker {
+            dbPath = nil
+            key = nil
+            identitySearchStart = 1
+            identitySearchHash = ""
+            accountMarker = marker
+        }
         if dbPath == nil { try discover(progress: progress) }
         try checkCancellation()
         let db = try open()
         defer { sqlite3_close(db) }
-        return try Self.queryRooms(db, target: target)
+        let rooms = try Self.queryRooms(db, target: target)
+        guard try currentAccountMarker() == marker else { throw UnreadError.query }
+        return rooms
     }
 }

@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 
 struct IconChoice {
     let title: String
@@ -51,7 +50,7 @@ final class SettingsController: NSWindowController {
     var onPermission: (() -> Void)?
 
     init(preferences: Preferences) {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 590),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 640),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "TalkSignal 설정"
         window.isReleasedWhenClosed = false
@@ -126,8 +125,8 @@ final class SettingsController: NSWindowController {
         stateRow.orientation = .horizontal
         stateRow.spacing = 8
         add(stateRow)
-        add(label("카톡은 채팅 목록을 연 채 최소화해 두세요. 창을 닫으면 감지가 멈추고 주황색 점으로 알려줘요.", size: 12, color: .secondaryLabelColor))
-        let permission = NSButton(title: "손쉬운 사용 권한 설정…", target: self, action: #selector(permissionClicked))
+        add(label("카톡이 실행 중이면 창과 알림 센터를 닫아도 감지해요. 폰에서 읽은 상태가 Mac에 동기화되면 점과 숫자가 꺼져요.", size: 12, color: .secondaryLabelColor))
+        let permission = NSButton(title: "전체 디스크 접근 설정…", target: self, action: #selector(permissionClicked))
         permission.bezelStyle = .rounded
         add(permission, full: false)
         saveButton.target = self
@@ -136,7 +135,7 @@ final class SettingsController: NSWindowController {
         saveButton.keyEquivalent = "\r"
         saveButton.setAccessibilityIdentifier("saveSettings")
         add(saveButton, full: false)
-        add(label("이름·아이콘 설정만 이 Mac에 저장해요. 메시지 본문을 읽거나 저장하지 않으며 외부 서버로 전송하지 않아요.", size: 11, color: .secondaryLabelColor))
+        add(label("전체 디스크 접근은 macOS의 넓은 권한이에요. 앱은 카톡 DB·설정과 기기 식별값을 사용하며, 메시지 본문 조회·외부 전송·수신 기록 저장은 하지 않아요.", size: 11, color: .secondaryLabelColor))
         window?.initialFirstResponder = name
     }
     func load(_ preferences: Preferences) {
@@ -174,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var state: SignalState = .checking
     private var settings: SettingsController?
     private var timer: Timer?
-    private let queue = DispatchQueue(label: "TalkSignal.accessibility", qos: .utility)
+    private let queue = DispatchQueue(label: "TalkSignal.database", qos: .utility)
     private let reader = ChatReader()
     private var busy = false
     private var generation = 0
@@ -204,7 +203,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let target = preferences.target
         let version = generation
         queue.async {
-            let result = self.reader.read(target: target)
+            let result = self.reader.read(target: target) { message in
+                DispatchQueue.main.async {
+                    guard version == self.generation else { return }
+                    self.state = .preparing(message)
+                    self.settings?.update(self.state)
+                    self.render()
+                }
+            }
             DispatchQueue.main.async {
                 self.busy = false
                 guard version == self.generation else { self.poll(); return }
@@ -219,8 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let symbolName = preferences.icon
         let emoji = preferences.emoji
         let preview = Date() < previewUntil
-        var hasUnread = preview
-        if case .ready(let unread) = state { hasUnread = hasUnread || unread.count > 0 }
+        let hasUnread = preview || state.hasUnread
         let warning = !preview && state.isWarning
         let colored = hasUnread || warning || symbolName == "emoji"
         let result = NSImage(size: NSSize(width: 25, height: 20), flipped: false) { rect in
@@ -267,12 +272,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = add("설정…", #selector(openSettings), key: ",")
         _ = add("지금 확인", #selector(refresh))
         _ = add("알림 표시 미리보기", #selector(preview))
-        if state == .permission { _ = add("손쉬운 사용 권한 설정…", #selector(openPermissions)) }
+        if state == .permission { _ = add("전체 디스크 접근 설정…", #selector(openPermissions)) }
         menu.addItem(.separator())
         _ = add("TalkSignal 종료", #selector(quit), key: "q")
         item.menu = menu
     }
-    @objc private func refresh() { poll() }
+    @objc private func refresh() {
+        queue.async { self.reader.retry() }
+        poll()
+    }
     @objc private func preview() {
         previewUntil = Date().addingTimeInterval(4)
         render()
@@ -289,7 +297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.state = .checking
                 self.settings?.update(self.state)
                 self.render()
-                self.poll()
+                self.refresh()
             }
             settings?.onPermission = { [weak self] in self?.openPermissions() }
         }
@@ -299,9 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func openPermissions() {
         // Explicit user action opens the system pane; the user grants permission.
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
             NSWorkspace.shared.open(url)
         }
     }
