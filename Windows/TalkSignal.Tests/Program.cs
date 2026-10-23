@@ -10,16 +10,16 @@ Check(!Names.Equal(name, name + " 회사"), "No prefix match");
 Check(!Names.Equal("", " "), "No empty-name match");
 Check(Monitor.Evaluate(name, null, now).Kind == StateKind.Pending, "No backend never implies read");
 Check(Monitor.Evaluate("", null, now).Kind == StateKind.Unconfigured, "Empty target prompts settings");
-var received = Monitor.Evaluate(name, Data(new(name, 3)), now);
-var read = Monitor.Evaluate(name, Data(new(name, 0)), now);
+var received = Monitor.Evaluate(name, Data(new RoomStatus(name, 3)), now);
+var read = Monitor.Evaluate(name, Data(new RoomStatus(name, 0)), now);
 Check(received.HasUnread && received.Count == 3 && received.Simulated, "Simulated receive activates indicator");
 Check(!read.HasUnread && !read.Warning && read.Count == 0, "Confirmed zero clears indicator");
-Check(Monitor.Evaluate(name, Data(new(name, null)), now).Warning, "Unknown count is not zero");
-Check(Monitor.Evaluate(name, Data(new(name, -1)), now).Warning, "Negative count rejected");
-Check(Monitor.Evaluate(name, Data(new(name, 1), new(name, 2)), now).Kind == StateKind.Ambiguous, "Duplicate names never summed");
-Check(Monitor.Evaluate(name, Data(new("다른 방", 9)), now).Kind == StateKind.Missing, "Missing target distinct from read");
-Check(Monitor.Evaluate(name, Data(new(name, 0)) with { CapturedAt = now.AddSeconds(-16) }, now).Kind == StateKind.Stale, "Old zero expires");
-Check(Monitor.Evaluate(name, Data(new(name, 1)) with { CapturedAt = now.AddSeconds(10) }, now).Kind == StateKind.Stale, "Future capture rejected");
+Check(Monitor.Evaluate(name, Data(new RoomStatus(name, null)), now).Warning, "Unknown count is not zero");
+Check(Monitor.Evaluate(name, Data(new RoomStatus(name, -1)), now).Warning, "Negative count rejected");
+Check(Monitor.Evaluate(name, Data(new RoomStatus(name, 1), new(name, 2)), now).Kind == StateKind.Ambiguous, "Duplicate names never summed");
+Check(Monitor.Evaluate(name, Data(new RoomStatus("다른 방", 9)), now).Kind == StateKind.Missing, "Missing target distinct from read");
+Check(Monitor.Evaluate(name, Data(new RoomStatus(name, 0)) with { CapturedAt = now.AddSeconds(-16) }, now).Kind == StateKind.Stale, "Old zero expires");
+Check(Monitor.Evaluate(name, Data(new RoomStatus(name, 1)) with { CapturedAt = now.AddSeconds(10) }, now).Kind == StateKind.Stale, "Future capture rejected");
 Check(WindowSelection.Exact(name, [(1, name + " 모임"), (2, name)]) == 2, "Open exact window only");
 try { WindowSelection.Exact(name, [(1, name), (2, name)]); throw new Exception("accepted ambiguity"); }
 catch (InvalidOperationException) { passed.Add("Ambiguous open refused"); }
