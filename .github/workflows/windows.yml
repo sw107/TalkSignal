@@ -1,0 +1,56 @@
+name: Windows build and VM tests
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: '10.0.x'
+      - name: State and persistence tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-output | Out-Null
+          dotnet run --project Windows/TalkSignal.Tests -c Release | Tee-Object -FilePath test-output/core-tests.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Core tests failed' }
+      - name: Build portable Windows x64 app
+        shell: pwsh
+        run: |
+          dotnet publish Windows/TalkSignal.Windows -c Release -r win-x64 --self-contained true -o dist/TalkSignal-Windows
+          if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
+          Copy-Item Windows/README.txt dist/TalkSignal-Windows/README.txt
+          Copy-Item Windows/Try-Demo.cmd dist/TalkSignal-Windows/Try-Demo.cmd
+      - name: Test published EXE in Windows VM
+        shell: pwsh
+        run: |
+          $out = (Resolve-Path test-output).Path
+          $process = Start-Process -FilePath dist/TalkSignal-Windows/TalkSignal.exe -ArgumentList @('--self-test', "`"$out`"") -PassThru
+          if (-not $process.WaitForExit(90000)) { $process.Kill(); throw 'Windows UI test timed out' }
+          if ($process.ExitCode -ne 0) { Get-Content test-output/windows-tests.json -ErrorAction SilentlyContinue; throw 'Windows UI tests failed' }
+          $report = Get-Content test-output/windows-tests.json -Raw | ConvertFrom-Json
+          if (-not $report.success) { throw 'Missing successful test report' }
+          Get-Content test-output/windows-tests.json
+      - name: Package and checksum
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/TalkSignal-Windows -DestinationPath dist/TalkSignal-Windows-x64.zip
+          $hash = Get-FileHash dist/TalkSignal-Windows-x64.zip -Algorithm SHA256
+          "$($hash.Hash.ToLower())  TalkSignal-Windows-x64.zip" | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: windows-test-results
+          path: test-output/
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: TalkSignal-Windows-x64
+          path: |
+            dist/TalkSignal-Windows-x64.zip
+            dist/SHA256SUMS.txt
+          retention-days: 30

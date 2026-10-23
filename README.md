@@ -2,6 +2,12 @@
 
 지정한 카카오톡 채팅방에 안 읽은 메시지가 있으면 macOS 메뉴바에 표시하는 개인용 앱입니다. 0.3은 카카오톡 자체 로컬 DB에서 개인 이름과 채팅방 이름을 찾아 안 읽은 수를 읽습니다. 카톡이 실행 중이라면 **카톡 창과 알림 센터를 모두 닫아도** 조회할 수 있습니다.
 
+## Windows 준비판
+
+`Windows/`는 Windows 11 x64를 대상으로 한 별도 .NET 트레이 앱입니다. **실제 카카오톡 안 읽음 감지 연동은 아직 구현되지 않았습니다.** 트레이·설정·자동 실행·표시 체험 및 이미 열린 대상 대화창 선택 기능을 제공합니다. Mac 앱/권한/빌드에는 영향을 주지 않습니다.
+
+GitHub Actions의 `windows-2025` 가상머신에서 빌드·실행 검사를 수행하고 런타임을 포함한 ZIP을 만듭니다. 맥에 Windows/VM/.NET을 설치하지 않습니다. Windows Server VM 결과는 Windows 11의 실제 카톡 계정·폰 읽음 동기화 검증과 다릅니다. 실행과 제거 방법은 [Windows/README.txt](Windows/README.txt), 검증 범위는 [Windows/TESTING.md](Windows/TESTING.md)를 참고하세요.
+
 ## 사용 방법
 
 1. `build/TalkSignal.app`을 실행하고 메뉴바 아이콘 **우클릭 → 설정…**을 엽니다.

@@ -2,3 +2,7 @@
 .DS_Store
 *.xcuserstate
 
+Windows/**/bin/
+Windows/**/obj/
+/dist/
+/test-output/
