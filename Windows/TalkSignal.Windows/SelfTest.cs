@@ -23,10 +23,10 @@ internal static class SelfTest
             Check(saved == new Preferences("테스트 방", Glyph.Star, false), "Settings controls save normalized target and selected icon");
             form.TargetBox.Text = ""; saved = null; form.SaveButton.PerformClick();
             Check(saved is null, "Blank target is refused by real form");
-            form.TargetBox.Text = "테스트 방"; form.UpdateStatus(new(StateKind.Pending)); Application.DoEvents();
-            using (var image = new Bitmap(form.Width, form.Height)) { form.DrawToBitmap(image, form.ClientRectangle); image.Save(Path.Combine(directory, "settings.png"), ImageFormat.Png); }
+            form.TargetBox.Text = "테스트 방"; form.SaveButton.PerformClick(); form.UpdateStatus(new(StateKind.Pending)); Application.DoEvents();
+            using (var image = new Bitmap(form.Width, form.Height)) { form.DrawToBitmap(image, new Rectangle(Point.Empty, form.Size)); image.Save(Path.Combine(directory, "settings.png"), ImageFormat.Png); }
             using var demo = new DemoForm(_ => { }); demo.Show(); Application.DoEvents();
-            using (var image = new Bitmap(demo.Width, demo.Height)) { demo.DrawToBitmap(image, demo.ClientRectangle); image.Save(Path.Combine(directory, "demo.png"), ImageFormat.Png); }
+            using (var image = new Bitmap(demo.Width, demo.Height)) { demo.DrawToBitmap(image, new Rectangle(Point.Empty, demo.Size)); image.Save(Path.Combine(directory, "demo.png"), ImageFormat.Png); }
             foreach (var glyph in Enum.GetValues<Glyph>()) {
                 using var off = TrayIcon.Create(glyph, new(StateKind.Ready, 0), true);
                 using var on = TrayIcon.Create(glyph, new(StateKind.Ready, 3), true);
