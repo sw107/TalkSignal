@@ -6,6 +6,7 @@ final class ChatReader {
     private var processID: pid_t?
     private var failedSearches = 0
     private var paused: SignalState?
+    private var resolvedRoom: RoomUnread?
 
     func stop() { database.stop() }
     func retry() { paused = nil; failedSearches = 0 }
@@ -17,7 +18,18 @@ final class ChatReader {
         return .ready(UnreadCount(count: count, isLowerBound: false))
     }
 
+    // Always resolve again on the serial DB queue. Never reuse an old target/account route.
+    func directChatDestination(target: String) -> Result<URL, ChatOpenError> {
+        let state = read(target: target)
+        guard case .ready = state else { return .failure(ChatOpenError(message: state.message)) }
+        guard let url = resolvedRoom?.directChatURL else {
+            return .failure(ChatOpenError(message: "바로 열기는 일반 1:1 채팅만 지원해요. 우클릭 메뉴의 ‘카카오톡 열기’를 이용해 주세요."))
+        }
+        return .success(url)
+    }
+
     func read(target: String, progress: @escaping (String) -> Void = { _ in }) -> SignalState {
+        resolvedRoom = nil
         guard !ChatParser.normalized(target).isEmpty else { return .unconfigured }
         let pid = NSRunningApplication.runningApplications(withBundleIdentifier: "com.kakao.KakaoTalkMac").first?.processIdentifier
         if pid != processID {
@@ -30,6 +42,7 @@ final class ChatReader {
         do {
             let rooms = try database.read(target: target, progress: progress)
             failedSearches = 0
+            if rooms.count == 1 { resolvedRoom = rooms[0] }
             return Self.state(for: rooms)
         } catch let error as UnreadError {
             if error == .access { return .permission }
@@ -45,3 +58,5 @@ final class ChatReader {
         } catch { return .unavailable }
     }
 }
+
+struct ChatOpenError: Error { let message: String }

@@ -42,9 +42,9 @@ func runUnreadSelfTests() throws {
     func expect(_ name: String, _ expected: [RoomUnread]) throws { let actual = try rooms(name); precondition(actual == expected, "Room mismatch: " + name) }
     try expect("테스트 단체방", [.init(name: "테스트 단체방", unread: 2)])
     try expect(" 테스트 단체방 ", [.init(name: "테스트 단체방", unread: 2)])
-    try expect("테스트 상대", [.init(name: "테스트 상대", unread: 0)])
-    try expect("개인 별명", [.init(name: "바꾼 1:1 방 이름", unread: 4)])
-    try expect("바꾼 1:1 방 이름", [.init(name: "바꾼 1:1 방 이름", unread: 4)])
+    try expect("테스트 상대", [.init(name: "테스트 상대", unread: 0, directUserID: 10)])
+    try expect("개인 별명", [.init(name: "바꾼 1:1 방 이름", unread: 4, directUserID: 11)])
+    try expect("바꾼 1:1 방 이름", [.init(name: "바꾼 1:1 방 이름", unread: 4, directUserID: 11)])
     try expect("옛 이름", []) // current display name wins over old contact/profile names
     try expect("오픈방", [.init(name: "오픈방", unread: 7)])
     try expect("참여자A, 참여자B", [.init(name: "참여자A, 참여자B", unread: 5)])
