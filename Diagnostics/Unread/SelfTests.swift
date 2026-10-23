@@ -81,5 +81,16 @@ func runUnreadSelfTests() throws {
     precondition(sqlite3_exec(db, "INSERT INTO NTChatRoom VALUES(1,81,'바뀐 단체방',0,0,NULL)", nil, nil, nil) == SQLITE_OK)
     let separateLinks = try rooms("바뀐 단체방")
     precondition(separateLinks.count == 2) // real room key is (chatId, linkId)
+    // No match / ambiguous match must not query any unread counts at all.
+    sqlite3_set_authorizer(db, nil, nil)
+    precondition(sqlite3_exec(db, "ALTER TABLE NTChatRoom RENAME COLUMN countOfNewMessage TO unavailableCount", nil, nil, nil) == SQLITE_OK)
+    try expect("없는 방", [])
+    let ambiguousWithoutCounts = try rooms("중복")
+    precondition(ambiguousWithoutCounts.count == 2)
+    do {
+        _ = try rooms("테스트 상대")
+        preconditionFailure("A unique match must require the unread column")
+    } catch UnreadError.schema { }
     print("PASS: group titles, renamed direct aliases, open/group names, duplicate joins, rename/read sync; message/phone reads, writes, ATTACH/extensions blocked")
+    print("PASS: unread counts are queried only after a unique name match")
 }

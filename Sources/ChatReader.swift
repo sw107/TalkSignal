@@ -6,7 +6,6 @@ final class ChatReader {
     private var processID: pid_t?
     private var failedSearches = 0
     private var paused: SignalState?
-    private var resolvedRoom: RoomUnread?
 
     func stop() { database.stop() }
     func retry() { paused = nil; failedSearches = 0 }
@@ -18,17 +17,7 @@ final class ChatReader {
         return .ready(UnreadCount(count: count, isLowerBound: false))
     }
 
-    // Always resolve again on the serial DB queue. Never reuse an old target/account route.
-    func chatDestination(target: String) -> Result<String, ChatOpenError> {
-        let state = read(target: target)
-        guard case .ready = state, let room = resolvedRoom else {
-            return .failure(ChatOpenError(message: state.message))
-        }
-        return .success(room.name)
-    }
-
     func read(target: String, progress: @escaping (String) -> Void = { _ in }) -> SignalState {
-        resolvedRoom = nil
         guard !ChatParser.normalized(target).isEmpty else { return .unconfigured }
         let pid = NSRunningApplication.runningApplications(withBundleIdentifier: "com.kakao.KakaoTalkMac").first?.processIdentifier
         if pid != processID {
@@ -39,9 +28,10 @@ final class ChatReader {
         guard pid != nil else { return .stopped }
         if let paused { return paused }
         do {
-            let rooms = try database.read(target: target, progress: progress)
+            let rooms = try FileAccess.shared.withReadAccess {
+                try database.read(target: target, progress: progress)
+            }
             failedSearches = 0
-            if rooms.count == 1 { resolvedRoom = rooms[0] }
             return Self.state(for: rooms)
         } catch let error as UnreadError {
             if error == .access { return .permission }
@@ -57,5 +47,3 @@ final class ChatReader {
         } catch { return .unavailable }
     }
 }
-
-struct ChatOpenError: Error { let message: String }

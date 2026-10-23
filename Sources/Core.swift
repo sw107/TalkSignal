@@ -27,7 +27,7 @@ enum SignalState: Equatable {
     var message: String {
         switch self {
         case .unconfigured: return "감지할 사람을 설정해 주세요"
-        case .permission: return "TalkSignal의 전체 디스크 접근 권한이 필요해요"
+        case .permission: return "카톡 데이터 폴더 2곳의 읽기 전용 연결이 필요해요"
         case .stopped: return "카카오톡이 실행 중이 아니에요"
         case .missing: return "지정한 이름을 카톡 DB에서 찾지 못했어요"
         case .unavailable: return "안 읽은 수를 확인할 수 없어요"

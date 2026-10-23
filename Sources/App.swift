@@ -48,7 +48,6 @@ final class SettingsController: NSWindowController {
     private let saveButton = NSButton(title: "저장하고 적용", target: nil, action: nil)
     var onSave: ((Preferences) -> Void)?
     var onPermission: (() -> Void)?
-    var onOpenChat: (() -> Void)?
 
     init(preferences: Preferences) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 640),
@@ -88,7 +87,7 @@ final class SettingsController: NSWindowController {
             if full { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         }
         add(label("소중한 연락, 메뉴바에서", size: 23, weight: .bold))
-        add(label("안 읽은 메시지가 있으면 분홍색 점이 켜져요.\n아이콘 클릭: 채팅방 열기 · 우클릭: 설정 메뉴", color: .secondaryLabelColor))
+        add(label("안 읽은 메시지가 있으면 분홍색 점이 켜져요.\n아이콘 클릭: 설정 · 우클릭: 메뉴", color: .secondaryLabelColor))
         stack.setCustomSpacing(24, after: stack.arrangedSubviews.last!)
         add(label("개인 이름 또는 채팅방 이름", weight: .semibold))
         name.placeholderString = "1:1 상대 이름 또는 단체 채팅방 이름"
@@ -127,7 +126,7 @@ final class SettingsController: NSWindowController {
         stateRow.spacing = 8
         add(stateRow)
         add(label("카톡이 실행 중이면 창과 알림 센터를 닫아도 감지해요. 폰에서 읽은 상태가 Mac에 동기화되면 점과 숫자가 꺼져요.", size: 12, color: .secondaryLabelColor))
-        let permission = NSButton(title: "전체 디스크 접근 설정…", target: self, action: #selector(permissionClicked))
+        let permission = NSButton(title: "카톡 폴더 읽기 전용 연결…", target: self, action: #selector(permissionClicked))
         permission.bezelStyle = .rounded
         add(permission, full: false)
         saveButton.target = self
@@ -135,13 +134,8 @@ final class SettingsController: NSWindowController {
         saveButton.bezelStyle = .rounded
         saveButton.keyEquivalent = "\r"
         saveButton.setAccessibilityIdentifier("saveSettings")
-        let openChat = NSButton(title: "저장된 대상 채팅방 열기", target: self, action: #selector(openChatClicked))
-        openChat.bezelStyle = .rounded
-        openChat.setAccessibilityIdentifier("openTargetChat")
-        let actions = NSStackView(views: [saveButton, openChat])
-        actions.spacing = 12
-        add(actions, full: false)
-        add(label("전체 디스크 접근은 macOS의 넓은 권한이에요. 앱은 카톡 DB·설정과 기기 식별값을 사용하며, 메시지 본문 조회·외부 전송·수신 기록 저장은 하지 않아요.", size: 11, color: .secondaryLabelColor))
+        add(saveButton, full: false)
+        add(label("보호 모드: 선택한 카톡 폴더 2곳만 읽기 전용으로 허용해요. 네트워크 권한과 카톡 조작 기능은 없어요. 전체 디스크 접근·손쉬운 사용 권한은 필요하지 않아요.", size: 11, color: .secondaryLabelColor))
         window?.initialFirstResponder = name
     }
     func load(_ preferences: Preferences) {
@@ -157,7 +151,6 @@ final class SettingsController: NSWindowController {
         if case .ready(let unread) = state, unread.count > 0 { statusDot.textColor = .systemPink }
     }
     @objc private func iconChanged() { emoji.isHidden = icons.indexOfSelectedItem != IconChoice.all.count - 1 }
-    @objc private func openChatClicked() { onOpenChat?() }
     @objc private func permissionClicked() { onPermission?() }
     @objc private func save() {
         let target = ChatParser.normalized(name.stringValue)
@@ -184,7 +177,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let queue = DispatchQueue(label: "TalkSignal.database", qos: .utility)
     private let reader = ChatReader()
     private var busy = false
-    private var openingChat = false
     private var generation = 0
     private var lastCheck: Date?
     private var previewUntil = Date.distantPast
@@ -193,7 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Launching TalkSignal must never launch or activate KakaoTalk.
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.setAccessibilityLabel("TalkSignal")
-        item.button?.setAccessibilityHelp("클릭하면 설정한 채팅방 열기, 우클릭 또는 Control-클릭하면 설정 메뉴")
+        item.button?.setAccessibilityHelp("클릭하면 TalkSignal 설정, 우클릭 또는 Control-클릭하면 메뉴")
         item.button?.target = self
         item.button?.action = #selector(statusClicked)
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -202,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         render()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.poll() }
         poll()
-        if preferences.target.isEmpty { openSettings() }
+        if preferences.target.isEmpty || !FileAccess.shared.configured { openSettings() }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -266,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         if preferences.showCount, case .ready(let count) = state, count.count > 0 { button.title = " \(count.label)" }
         button.toolTip = "TalkSignal · \(preferences.target.isEmpty ? "설정 필요" : preferences.target)\n\(state.message)"
-        button.toolTip = (button.toolTip ?? "") + "\n클릭: 채팅방 열기 · 우클릭: 설정 메뉴"
+        button.toolTip = (button.toolTip ?? "") + "\n클릭: 설정 · 우클릭: 메뉴"
         button.setAccessibilityValue(state.message)
         let menu = NSMenu()
         func add(_ title: String, _ action: Selector? = nil, key: String = "") -> NSMenuItem {
@@ -283,12 +275,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = add("최근 확인 \(format.string(from: lastCheck))")
         }
         menu.addItem(.separator())
-        _ = add("대상 채팅방 열기", #selector(openTargetChat))
-        _ = add("카카오톡 열기", #selector(openKakaoTalk))
         _ = add("설정…", #selector(openSettings), key: ",")
         _ = add("지금 확인", #selector(refresh))
         _ = add("알림 표시 미리보기", #selector(preview))
-        if state == .permission { _ = add("전체 디스크 접근 설정…", #selector(openPermissions)) }
+        if state == .permission { _ = add("카톡 폴더 읽기 전용 연결…", #selector(openPermissions)) }
         menu.addItem(.separator())
         _ = add("TalkSignal 종료", #selector(quit), key: "q")
         statusMenu = menu
@@ -300,71 +290,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Keep the primary action attached while the menu is being displayed.
             statusMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
         } else {
-            openTargetChat()
+            openSettings()
         }
-    }
-    @objc private func openTargetChat() {
-        guard !openingChat else { return }
-        guard !preferences.target.isEmpty else { openSettings(); return }
-        guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.kakao.KakaoTalkMac") else {
-            showKakaoOpenError("이 Mac에서 카카오톡 앱을 찾지 못했어요.")
-            return
-        }
-        guard ChatOpener.hasPermission else {
-            let alert = NSAlert()
-            alert.messageText = "채팅방을 열려면 TalkSignal의 손쉬운 사용 권한이 필요해요"
-            alert.informativeText = "시스템 설정에서 TalkSignal을 허용해 주세요. 안 읽음 자동 감지는 기존 DB 방식으로 계속 동작해요."
-            alert.addButton(withTitle: "손쉬운 사용 설정 열기")
-            alert.addButton(withTitle: "취소")
-            NSApp.activate(ignoringOtherApps: true)
-            if alert.runModal() == .alertFirstButtonReturn,
-               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                NSWorkspace.shared.open(url)
-            }
-            return
-        }
-        openingChat = true
-        let target = preferences.target
-        let version = generation
-        queue.async {
-            let destination = self.reader.chatDestination(target: target)
-            DispatchQueue.main.async {
-                guard version == self.generation else { self.openingChat = false; return }
-                switch destination {
-                case .failure(let error):
-                    self.openingChat = false
-                    self.showKakaoOpenError(error.message)
-                case .success(let name):
-                    ChatOpener.open(name: name, applicationURL: applicationURL,
-                                    isCurrent: { self.generation == version }) { error in
-                        self.openingChat = false
-                        if let error { self.showKakaoOpenError(error) }
-                        self.poll()
-                    }
-                }
-            }
-        }
-    }
-    @objc private func openKakaoTalk() {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.kakao.KakaoTalkMac") else {
-            showKakaoOpenError("이 Mac에서 카카오톡 앱을 찾지 못했어요.")
-            return
-        }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        // Send the standard reopen event too, so a closed or minimized window reappears.
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
-            if error != nil {
-                DispatchQueue.main.async { self.showKakaoOpenError("카카오톡을 열지 못했어요. 앱 설치 상태를 확인해 주세요.") }
-            }
-        }
-    }
-    private func showKakaoOpenError(_ message: String) {
-        let alert = NSAlert()
-        alert.messageText = message
-        alert.addButton(withTitle: "확인")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
     }
     @objc private func refresh() {
         queue.async { self.reader.retry() }
@@ -388,7 +315,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.render()
                 self.refresh()
             }
-            settings?.onOpenChat = { [weak self] in self?.openTargetChat() }
             settings?.onPermission = { [weak self] in self?.openPermissions() }
         }
         settings?.update(state)
@@ -396,9 +322,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
     @objc private func openPermissions() {
-        // Explicit user action opens the system pane; the user grants permission.
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
-            NSWorkspace.shared.open(url)
+        NSApp.activate(ignoringOtherApps: true)
+        var selected: [FileAccess.Location: URL] = [:]
+        for location in FileAccess.Location.allCases {
+            let panel = NSOpenPanel()
+            let expected = FileAccess.expected(location)
+            panel.title = location == .preferences ? "1/2 · 카톡 설정 폴더 연결" : "2/2 · 카톡 DB 폴더 연결"
+            panel.message = "이 폴더만 읽기 전용으로 허용합니다.\n" + expected.path
+            panel.prompt = "읽기 전용으로 연결"
+            panel.canChooseFiles = false; panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false; panel.canCreateDirectories = false
+            panel.directoryURL = expected
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            guard FileAccess.valid(url, for: location) else {
+                let alert = NSAlert(); alert.messageText = "지정된 카톡 폴더를 선택해 주세요."
+                alert.informativeText = expected.path; alert.runModal(); return
+            }
+            selected[location] = url
+        }
+        do {
+            try FileAccess.shared.save(selected)
+            generation += 1; state = .checking; render(); refresh()
+        } catch {
+            let alert = NSAlert(); alert.messageText = "폴더 읽기 권한을 저장하지 못했어요. 다시 연결해 주세요."
+            alert.runModal()
         }
     }
     @objc private func quit() { NSApp.terminate(nil) }
@@ -410,12 +357,9 @@ struct TalkSignal {
         if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--probe" {
             let reader = ChatReader()
             for _ in 0..<2 {
-                let before = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
                 let start = Date()
                 let state = reader.read(target: CommandLine.arguments[2])
-                let output: [String: Any] = ["state": state.message, "seconds": Date().timeIntervalSince(start),
-                    "frontmostBefore": before,
-                    "frontmostAfter": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"]
+                let output: [String: Any] = ["state": state.message, "seconds": Date().timeIntervalSince(start)]
                 let data = try! JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
                 print(String(decoding: data, as: UTF8.self))
             }

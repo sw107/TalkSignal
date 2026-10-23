@@ -22,6 +22,11 @@ struct CoreTests {
         check(ChatReader.state(for: [.init(name: "test", unread: 0), .init(name: "test", unread: 1)]).isWarning, "ambiguous name is unknown")
         check(SignalState.permission.isWarning && !SignalState.permission.hasUnread, "permission failure is not an unread result")
         check(SignalState.stopped.isWarning, "stopped Kakao is unknown")
+        for location in FileAccess.Location.allCases {
+            let expected = FileAccess.expected(location)
+            check(!FileAccess.valid(expected.deletingLastPathComponent(), for: location), "reject broader folder grants")
+            check(!FileAccess.valid(FileAccess.userHome.appendingPathComponent("Documents"), for: location), "reject unrelated folder grants")
+        }
         try runUnreadSelfTests()
         print("PASS: \(checks) name/state checks")
     }

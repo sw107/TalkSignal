@@ -8,7 +8,7 @@ enum UnreadError: Error, Equatable {
     case access, noDatabase, identity, ambiguousAccount, key, schema, query, cancelled
     var message: String {
         switch self {
-        case .access: return "카톡 데이터 접근 불가 · 이 앱의 전체 디스크 접근을 확인해 주세요"
+        case .access: return "카톡 폴더 읽기 권한이 없어요 · 폴더를 다시 연결해 주세요"
         case .noDatabase: return "지원하는 카톡 로컬 DB를 찾지 못했어요"
         case .identity: return "현재 계정 식별값을 찾지 못했어요 · 추가 진단 필요"
         case .ambiguousAccount: return "여러 계정 정보가 있어 현재 계정을 확정할 수 없어요"
@@ -38,6 +38,7 @@ func unreadAuthorizer(_ context: UnsafeMutableRawPointer?, _ action: Int32,
                       _ first: UnsafePointer<CChar>?, _ second: UnsafePointer<CChar>?,
                       _ database: UnsafePointer<CChar>?, _ trigger: UnsafePointer<CChar>?) -> Int32 {
     if action == SQLITE_SELECT { return SQLITE_OK }
+    if action == SQLITE_TRANSACTION { return SQLITE_OK } // read snapshot, no write operations allowed
     // SQLite's INTEGER PRIMARY KEY scan also requests a table-row visit with
     // an empty column and nil database. This grants no extra value columns.
     if action == SQLITE_READ, first.map({ String(cString: $0) }) == "NTChatContext",
@@ -52,8 +53,7 @@ func unreadAuthorizer(_ context: UnsafeMutableRawPointer?, _ action: Int32,
 
 final class LocalUnreadReader {
     private(set) var diagnostics: [String: Any] = [:]
-    private let base = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Containers/com.kakao.KakaoTalkMac/Data/Library")
+    private let base = FileAccess.kakaoLibrary
     private var accountMarker: [String]?
     private var dbPath: String?
     private var key: String? // In-memory only, never arguments, report, log or disk.
@@ -100,12 +100,12 @@ final class LocalUnreadReader {
         do { entries = try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) }
         catch { throw UnreadError.access }
         diagnostics["dataDirectoryReadable"] = true
-        let databases = entries.filter { $0.lastPathComponent.range(of: "^[0-9a-fA-F]{78}(\\.db)?$", options: .regularExpression) != nil }
+        let databases = entries.filter { $0.resolvingSymlinksInPath().path == $0.standardizedFileURL.path && $0.lastPathComponent.range(of: "^[0-9a-fA-F]{78}(\\.db)?$", options: .regularExpression) != nil }
         diagnostics["databaseFiles"] = databases.count
         guard !databases.isEmpty else { throw UnreadError.noDatabase }
         let prefFolder = base.appendingPathComponent("Preferences")
         let prefURLs = ((try? fm.contentsOfDirectory(at: prefFolder, includingPropertiesForKeys: nil)) ?? []).filter {
-            $0.lastPathComponent.hasPrefix("com.kakao.KakaoTalkMac") && $0.pathExtension == "plist"
+            $0.resolvingSymlinksInPath().path == $0.standardizedFileURL.path && $0.lastPathComponent.hasPrefix("com.kakao.KakaoTalkMac") && $0.pathExtension == "plist"
         }
         var ids = Set<Int>()
         var hashes = Set<String>()
@@ -232,11 +232,14 @@ final class LocalUnreadReader {
         sqlite3_set_authorizer(db, unreadAuthorizer, nil)
         let target = RoomNames.normalized(target)
         guard !target.isEmpty else { return [] }
+        guard sqlite3_exec(db, "BEGIN DEFERRED TRANSACTION", nil, nil, nil) == SQLITE_OK else { throw UnreadError.query }
+        defer { sqlite3_exec(db, "ROLLBACK", nil, nil, nil) }
+        // Resolve names first. Do not retrieve the unread counts of unrelated rooms.
         // Only room-title metadata (type 3), never notices or message content.
         let sql = """
             SELECT r.chatId, r.chatName, m.content, o.linkName,
                    COALESCE(NULLIF(u.displayName,''),NULLIF(u.friendNickName,''),u.nickName),
-                   r.countOfNewMessage, r.displayMemberIds, r.linkId
+                   NULL, r.displayMemberIds, r.linkId
             FROM NTChatRoom r
             LEFT JOIN NTUser u ON r.directChatMemberUserId=u.userId AND u.linkId=0
             LEFT JOIN NTChatMeta m ON m.chatId=r.chatId AND m.type=3
@@ -249,7 +252,7 @@ final class LocalUnreadReader {
         func text(_ column: Int32) -> String? {
             sqlite3_column_text(statement, column).map { String(cString: $0) }
         }
-        struct Match: Equatable { let names: RoomNames; let unread: Int? }
+        struct Match: Equatable { let names: RoomNames; let chatId: Int64; let linkId: Int64 }
         var matches: [String: Match] = [:]
         var memberNames: [String: String]?
         var selfID: Int64?
@@ -274,8 +277,7 @@ final class LocalUnreadReader {
                 }
             }
             if let names = RoomNames.resolve(room: room, title: title, openLink: link, person: person, members: generated), names.aliases.contains(target) {
-                let count = sqlite3_column_type(statement, 5) == SQLITE_INTEGER ? Int(sqlite3_column_int64(statement, 5)) : -1
-                let match = Match(names: names, unread: count >= 0 ? count : nil)
+                let match = Match(names: names, chatId: sqlite3_column_int64(statement, 0), linkId: sqlite3_column_int64(statement, 7))
                 let id = "\(sqlite3_column_int64(statement, 0)):\(sqlite3_column_int64(statement, 7))"
                 if let old = matches[id], old != match { throw UnreadError.query }
                 matches[id] = match // join duplication cannot double the unread count
@@ -283,10 +285,26 @@ final class LocalUnreadReader {
             step = sqlite3_step(statement)
         }
         guard step == SQLITE_DONE else { throw UnreadError.query }
-        return matches.keys.sorted().compactMap { id in
-            matches[id].map { RoomUnread(name: $0.names.display, unread: $0.unread) }
+        guard matches.count == 1, let match = matches.values.first else {
+            return matches.keys.sorted().compactMap { matches[$0].map { RoomUnread(name: $0.names.display, unread: nil) } }
         }
+        // A bound room key is the only unread-count query. Do not sum duplicate records.
+        var countStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT countOfNewMessage FROM NTChatRoom WHERE chatId=? AND linkId=?", -1, &countStatement, nil) == SQLITE_OK else { throw UnreadError.schema }
+        defer { sqlite3_finalize(countStatement) }
+        sqlite3_bind_int64(countStatement, 1, match.chatId)
+        sqlite3_bind_int64(countStatement, 2, match.linkId)
+        var counts: [Int?] = []
+        step = sqlite3_step(countStatement)
+        while step == SQLITE_ROW {
+            let count = sqlite3_column_type(countStatement, 0) == SQLITE_INTEGER ? Int(sqlite3_column_int64(countStatement, 0)) : -1
+            counts.append(count >= 0 ? count : nil)
+            step = sqlite3_step(countStatement)
+        }
+        guard step == SQLITE_DONE, !counts.isEmpty, counts.allSatisfy({ $0 == counts[0] }) else { throw UnreadError.query }
+        return [RoomUnread(name: match.names.display, unread: counts[0])]
     }
+
     private static func readMemberNames(_ db: OpaquePointer) throws -> (names: [String: String], selfID: Int64?) {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "SELECT userId FROM NTChatContext", -1, &stmt, nil) == SQLITE_OK else { throw UnreadError.schema }
@@ -316,7 +334,7 @@ final class LocalUnreadReader {
         do { urls = try FileManager.default.contentsOfDirectory(at: base.appendingPathComponent("Preferences"), includingPropertiesForKeys: nil) }
         catch { throw UnreadError.access }
         var markers: [String] = []
-        for url in urls where url.lastPathComponent.hasPrefix("com.kakao.KakaoTalkMac") && url.pathExtension == "plist" {
+        for url in urls where url.resolvingSymlinksInPath().path == url.standardizedFileURL.path && url.lastPathComponent.hasPrefix("com.kakao.KakaoTalkMac") && url.pathExtension == "plist" {
             let data: Data
             do { data = try Data(contentsOf: url) } catch { throw UnreadError.access }
             guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { throw UnreadError.query }
