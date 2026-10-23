@@ -87,7 +87,7 @@ final class SettingsController: NSWindowController {
             if full { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         }
         add(label("소중한 연락, 메뉴바에서", size: 23, weight: .bold))
-        add(label("지정한 채팅방에 안 읽은 메시지가 있으면 분홍색 점이 켜져요.", color: .secondaryLabelColor))
+        add(label("안 읽은 메시지가 있으면 분홍색 점이 켜져요.\n아이콘 클릭: 카톡 열기 · 우클릭: 설정 메뉴", color: .secondaryLabelColor))
         stack.setCustomSpacing(24, after: stack.arrangedSubviews.last!)
         add(label("개인 이름 또는 채팅방 이름", weight: .semibold))
         name.placeholderString = "1:1 상대 이름 또는 단체 채팅방 이름"
@@ -169,6 +169,7 @@ final class SettingsController: NSWindowController {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var item: NSStatusItem!
+    private var statusMenu = NSMenu()
     private var preferences = Preferences.load()
     private var state: SignalState = .checking
     private var settings: SettingsController?
@@ -184,6 +185,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Launching TalkSignal must never launch or activate KakaoTalk.
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.setAccessibilityLabel("TalkSignal")
+        item.button?.setAccessibilityHelp("클릭하면 카카오톡 열기, 우클릭 또는 Control-클릭하면 설정 메뉴")
+        item.button?.target = self
+        item.button?.action = #selector(statusClicked)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(appearanceChanged),
             name: NSNotification.Name("AppleInterfaceThemeChangedNotification"), object: nil)
         render()
@@ -253,6 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         if preferences.showCount, case .ready(let count) = state, count.count > 0 { button.title = " \(count.label)" }
         button.toolTip = "TalkSignal · \(preferences.target.isEmpty ? "설정 필요" : preferences.target)\n\(state.message)"
+        button.toolTip = (button.toolTip ?? "") + "\n클릭: 카톡 열기 · 우클릭: 설정 메뉴"
         button.setAccessibilityValue(state.message)
         let menu = NSMenu()
         func add(_ title: String, _ action: Selector? = nil, key: String = "") -> NSMenuItem {
@@ -269,13 +275,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = add("최근 확인 \(format.string(from: lastCheck))")
         }
         menu.addItem(.separator())
+        _ = add("카카오톡 열기", #selector(openKakaoTalk))
         _ = add("설정…", #selector(openSettings), key: ",")
         _ = add("지금 확인", #selector(refresh))
         _ = add("알림 표시 미리보기", #selector(preview))
         if state == .permission { _ = add("전체 디스크 접근 설정…", #selector(openPermissions)) }
         menu.addItem(.separator())
         _ = add("TalkSignal 종료", #selector(quit), key: "q")
-        item.menu = menu
+        statusMenu = menu
+    }
+    @objc private func statusClicked() {
+        guard let button = item.button else { return }
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            // Keep the primary action attached while the menu is being displayed.
+            statusMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
+        } else {
+            openKakaoTalk()
+        }
+    }
+    @objc private func openKakaoTalk() {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.kakao.KakaoTalkMac") else {
+            showKakaoOpenError("이 Mac에서 카카오톡 앱을 찾지 못했어요.")
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        // Send the standard reopen event too, so a closed or minimized window reappears.
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
+            if error != nil {
+                DispatchQueue.main.async { self.showKakaoOpenError("카카오톡을 열지 못했어요. 앱 설치 상태를 확인해 주세요.") }
+            }
+        }
+    }
+    private func showKakaoOpenError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "확인")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
     @objc private func refresh() {
         queue.async { self.reader.retry() }
