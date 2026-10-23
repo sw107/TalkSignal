@@ -35,4 +35,12 @@ Mac에는 VM, SDK, 런타임을 설치하지 않고 소스 작성/원격 실행/
 - [Microsoft notification area](https://learn.microsoft.com/en-us/windows/win32/shell/notification-area): 트레이 아이콘.
 - [Microsoft single-file deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/single-file/): self-contained 배포.
 
-원격 검사 실행 결과는 작업 완료 시 아래에 기록합니다.
+## 2026-10-23 최종 원격 실행 결과
+
+- [성공한 원격 실행](https://github.com/sw107/TalkSignal/actions/runs/39933389017), 검증 소스 `b529c9cd2e99149e9b69a51c8dbf34626c49e309`.
+- Windows Server 2025 x64 (`10.0.26100`), .NET 10.0.13.
+- 상태/설정 검사 19개 + 게시 EXE의 Windows 네이티브 검사 15개 = 총 34개 통과.
+- ZIP 패키지와 SHA-256 생성 성공. 실제 실행 파일로 설정창/체험창 캡처를 만들고 로컬에서 잘림 여부를 확인함.
+- 첫 원격 실행에서 테스트 코드의 params 타입 추론 컴파일 오류를 발견하여 명시적 타입으로 수정함. 최종 재실행 전체 성공.
+- 실제 카톡 및 Windows 11 데스크톱 검증은 미수행. 자동 실행은 VM 레지스트리 등록/해제 검증이며, 재부팅 후 실행 검증은 미수행.
+- Mac에서는 소스 작성/기존 gh로 원격 실행/결과 다운로드만 수행. 신규 프로그램·SDK·가상환경 설치 없음.
