@@ -88,7 +88,7 @@ final class SettingsController: NSWindowController {
             if full { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         }
         add(label("소중한 연락, 메뉴바에서", size: 23, weight: .bold))
-        add(label("안 읽은 메시지가 있으면 분홍색 점이 켜져요.\n아이콘 클릭: 1:1 채팅 열기 · 우클릭: 설정 메뉴", color: .secondaryLabelColor))
+        add(label("안 읽은 메시지가 있으면 분홍색 점이 켜져요.\n아이콘 클릭: 채팅방 열기 · 우클릭: 설정 메뉴", color: .secondaryLabelColor))
         stack.setCustomSpacing(24, after: stack.arrangedSubviews.last!)
         add(label("개인 이름 또는 채팅방 이름", weight: .semibold))
         name.placeholderString = "1:1 상대 이름 또는 단체 채팅방 이름"
@@ -193,7 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Launching TalkSignal must never launch or activate KakaoTalk.
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.setAccessibilityLabel("TalkSignal")
-        item.button?.setAccessibilityHelp("클릭하면 설정한 1:1 채팅방 열기, 우클릭 또는 Control-클릭하면 설정 메뉴")
+        item.button?.setAccessibilityHelp("클릭하면 설정한 채팅방 열기, 우클릭 또는 Control-클릭하면 설정 메뉴")
         item.button?.target = self
         item.button?.action = #selector(statusClicked)
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -266,7 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         if preferences.showCount, case .ready(let count) = state, count.count > 0 { button.title = " \(count.label)" }
         button.toolTip = "TalkSignal · \(preferences.target.isEmpty ? "설정 필요" : preferences.target)\n\(state.message)"
-        button.toolTip = (button.toolTip ?? "") + "\n클릭: 1:1 채팅 열기 · 우클릭: 설정 메뉴"
+        button.toolTip = (button.toolTip ?? "") + "\n클릭: 채팅방 열기 · 우클릭: 설정 메뉴"
         button.setAccessibilityValue(state.message)
         let menu = NSMenu()
         func add(_ title: String, _ action: Selector? = nil, key: String = "") -> NSMenuItem {
@@ -283,7 +283,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = add("최근 확인 \(format.string(from: lastCheck))")
         }
         menu.addItem(.separator())
-        _ = add("대상 1:1 채팅방 열기", #selector(openTargetChat))
+        _ = add("대상 채팅방 열기", #selector(openTargetChat))
         _ = add("카카오톡 열기", #selector(openKakaoTalk))
         _ = add("설정…", #selector(openSettings), key: ",")
         _ = add("지금 확인", #selector(refresh))
@@ -310,30 +310,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showKakaoOpenError("이 Mac에서 카카오톡 앱을 찾지 못했어요.")
             return
         }
+        guard ChatOpener.hasPermission else {
+            let alert = NSAlert()
+            alert.messageText = "채팅방을 열려면 TalkSignal의 손쉬운 사용 권한이 필요해요"
+            alert.informativeText = "시스템 설정에서 TalkSignal을 허용해 주세요. 안 읽음 자동 감지는 기존 DB 방식으로 계속 동작해요."
+            alert.addButton(withTitle: "손쉬운 사용 설정 열기")
+            alert.addButton(withTitle: "취소")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn,
+               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
         openingChat = true
         let target = preferences.target
         let version = generation
         queue.async {
-            let destination = self.reader.directChatDestination(target: target)
+            let destination = self.reader.chatDestination(target: target)
             DispatchQueue.main.async {
                 guard version == self.generation else { self.openingChat = false; return }
                 switch destination {
                 case .failure(let error):
                     self.openingChat = false
                     self.showKakaoOpenError(error.message)
-                case .success(let url):
-                    let configuration = NSWorkspace.OpenConfiguration()
-                    configuration.activates = true
-                    // Only KakaoTalk receives this in-memory route; no browser, clipboard or URL log.
-                    NSWorkspace.shared.open([url], withApplicationAt: applicationURL, configuration: configuration) { _, error in
-                        DispatchQueue.main.async {
-                            self.openingChat = false
-                            if error != nil {
-                                self.showKakaoOpenError("채팅방 열기 요청을 전달하지 못했어요. 우클릭 메뉴에서 카카오톡을 열어 주세요.")
-                            } else {
-                                self.poll()
-                            }
-                        }
+                case .success(let name):
+                    ChatOpener.open(name: name, applicationURL: applicationURL,
+                                    isCurrent: { self.generation == version }) { error in
+                        self.openingChat = false
+                        if let error { self.showKakaoOpenError(error) }
+                        self.poll()
                     }
                 }
             }

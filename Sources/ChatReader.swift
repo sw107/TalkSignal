@@ -19,13 +19,12 @@ final class ChatReader {
     }
 
     // Always resolve again on the serial DB queue. Never reuse an old target/account route.
-    func directChatDestination(target: String) -> Result<URL, ChatOpenError> {
+    func chatDestination(target: String) -> Result<String, ChatOpenError> {
         let state = read(target: target)
-        guard case .ready = state else { return .failure(ChatOpenError(message: state.message)) }
-        guard let url = resolvedRoom?.directChatURL else {
-            return .failure(ChatOpenError(message: "바로 열기는 일반 1:1 채팅만 지원해요. 우클릭 메뉴의 ‘카카오톡 열기’를 이용해 주세요."))
+        guard case .ready = state, let room = resolvedRoom else {
+            return .failure(ChatOpenError(message: state.message))
         }
-        return .success(url)
+        return .success(room.name)
     }
 
     func read(target: String, progress: @escaping (String) -> Void = { _ in }) -> SignalState {

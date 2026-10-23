@@ -7,7 +7,7 @@ APP=build/staging/TalkSignal.app
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 xcrun swiftc -swift-version 5 -O -module-cache-path build/module-cache \
   -target "$(uname -m)-apple-macos27.0" -I build/unread-cmodule -L "$SQLCIPHER_PREFIX/lib" \
-  Sources/Core.swift Sources/ChatReader.swift Sources/Database/*.swift Sources/App.swift build/IdentityScan.o \
+  Sources/Core.swift Sources/ChatOpener.swift Sources/ChatReader.swift Sources/Database/*.swift Sources/App.swift build/IdentityScan.o \
   -lsqlcipher -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
   -o "$APP/Contents/MacOS/TalkSignal"
 CRYPTO_PREFIX="$(/opt/homebrew/bin/brew --prefix openssl@4)"

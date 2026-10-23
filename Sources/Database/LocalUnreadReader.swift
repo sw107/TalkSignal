@@ -23,15 +23,6 @@ enum UnreadError: Error, Equatable {
 struct RoomUnread: Equatable {
     let name: String
     let unread: Int?
-    let directUserID: Int64?
-
-    init(name: String, unread: Int?, directUserID: Int64? = nil) {
-        self.name = name; self.unread = unread; self.directUserID = directUserID
-    }
-    var directChatURL: URL? {
-        guard let id = directUserID, id > 0 else { return nil }
-        return URL(string: "kakaotalk://friend?action=chat&user_id=\(id)")
-    }
 }
 
 // Restrict actual SQL reads to the room name/count and name-join columns.
@@ -245,7 +236,7 @@ final class LocalUnreadReader {
         let sql = """
             SELECT r.chatId, r.chatName, m.content, o.linkName,
                    COALESCE(NULLIF(u.displayName,''),NULLIF(u.friendNickName,''),u.nickName),
-                   r.countOfNewMessage, r.displayMemberIds, r.linkId, r.directChatMemberUserId
+                   r.countOfNewMessage, r.displayMemberIds, r.linkId
             FROM NTChatRoom r
             LEFT JOIN NTUser u ON r.directChatMemberUserId=u.userId AND u.linkId=0
             LEFT JOIN NTChatMeta m ON m.chatId=r.chatId AND m.type=3
@@ -258,7 +249,7 @@ final class LocalUnreadReader {
         func text(_ column: Int32) -> String? {
             sqlite3_column_text(statement, column).map { String(cString: $0) }
         }
-        struct Match: Equatable { let names: RoomNames; let unread: Int?; let directUserID: Int64? }
+        struct Match: Equatable { let names: RoomNames; let unread: Int? }
         var matches: [String: Match] = [:]
         var memberNames: [String: String]?
         var selfID: Int64?
@@ -284,10 +275,7 @@ final class LocalUnreadReader {
             }
             if let names = RoomNames.resolve(room: room, title: title, openLink: link, person: person, members: generated), names.aliases.contains(target) {
                 let count = sqlite3_column_type(statement, 5) == SQLITE_INTEGER ? Int(sqlite3_column_int64(statement, 5)) : -1
-                let userID = sqlite3_column_int64(statement, 8)
-                let isDirect = sqlite3_column_type(statement, 8) == SQLITE_INTEGER && userID > 0
-                    && sqlite3_column_type(statement, 7) == SQLITE_INTEGER && sqlite3_column_int64(statement, 7) == 0
-                let match = Match(names: names, unread: count >= 0 ? count : nil, directUserID: isDirect ? userID : nil)
+                let match = Match(names: names, unread: count >= 0 ? count : nil)
                 let id = "\(sqlite3_column_int64(statement, 0)):\(sqlite3_column_int64(statement, 7))"
                 if let old = matches[id], old != match { throw UnreadError.query }
                 matches[id] = match // join duplication cannot double the unread count
@@ -296,7 +284,7 @@ final class LocalUnreadReader {
         }
         guard step == SQLITE_DONE else { throw UnreadError.query }
         return matches.keys.sorted().compactMap { id in
-            matches[id].map { RoomUnread(name: $0.names.display, unread: $0.unread, directUserID: $0.directUserID) }
+            matches[id].map { RoomUnread(name: $0.names.display, unread: $0.unread) }
         }
     }
     private static func readMemberNames(_ db: OpaquePointer) throws -> (names: [String: String], selfID: Int64?) {

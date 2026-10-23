@@ -22,10 +22,6 @@ struct CoreTests {
         check(ChatReader.state(for: [.init(name: "test", unread: 0), .init(name: "test", unread: 1)]).isWarning, "ambiguous name is unknown")
         check(SignalState.permission.isWarning && !SignalState.permission.hasUnread, "permission failure is not an unread result")
         check(SignalState.stopped.isWarning, "stopped Kakao is unknown")
-        check(RoomUnread(name: "test", unread: 0, directUserID: 123).directChatURL?.absoluteString == "kakaotalk://friend?action=chat&user_id=123", "validated direct route")
-        check(RoomUnread(name: "test", unread: 0).directChatURL == nil, "group has no direct route")
-        check(RoomUnread(name: "test", unread: 0, directUserID: -1).directChatURL == nil, "invalid ID has no route")
-        check(RoomUnread(name: "test", unread: 0, directUserID: 0).directChatURL == nil, "zero ID has no route")
         try runUnreadSelfTests()
         print("PASS: \(checks) name/state checks")
     }
