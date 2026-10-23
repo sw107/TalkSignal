@@ -91,18 +91,53 @@ final class ChatOpener {
                     try ensureCurrent()
                     guard let search,
                           text(search, kAXSubroleAttribute) == kAXSearchFieldSubrole,
-                          AXUIElementSetAttributeValue(search, kAXValueAttribute as CFString, name as CFString) == .success else {
+                          AXUIElementSetAttributeValue(search, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success,
+                          let focusedSearch = value(root, kAXFocusedUIElementAttribute), CFEqual(focusedSearch, search) else {
                         throw Failure(message: "카톡 채팅방 검색란을 확인하지 못했어요")
                     }
-                    Thread.sleep(forTimeInterval: 0.4)
+                    // Setting AXValue alone can change the visible string without firing
+                    // Kakao's search handler. Generate normal editing events in the verified search field.
+                    try key(0, flags: .maskCommand, pid: pid)
                     try ensureCurrent()
-                    guard let table = find(main, role: kAXTableRole) else { throw Failure(message: "채팅 목록을 찾지 못했어요") }
-                    let rows = value(table, kAXRowsAttribute) as? [AXUIElement] ?? children(table)
-                    let matches = rows.filter { row in
-                        text(row, kAXRoleAttribute) == kAXRowRole && rowName(row).map { ChatParser.matches($0, target: name) } == true
+                    guard let stillFocused = value(root, kAXFocusedUIElementAttribute), CFEqual(stillFocused, search) else {
+                        throw Failure(message: "검색 입력 위치가 바뀌어 열기를 취소했어요")
                     }
-                    guard matches.count == 1, let row = matches.first else {
-                        throw Failure(message: "카톡 목록에서 이름이 정확히 일치하는 방 하나를 확인하지 못했어요. 검색 결과를 확인해 주세요.")
+                    let units = Array(name.utf16)
+                    guard !units.isEmpty, units.count <= 512,
+                          let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+                          let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
+                        throw Failure(message: "채팅방 이름을 검색란에 입력하지 못했어요")
+                    }
+                    units.withUnsafeBufferPointer { buffer in
+                        down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress!)
+                        up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress!)
+                    }
+                    down.postToPid(pid); up.postToPid(pid)
+                    // Reacquire the result table during asynchronous search. A fixed 0.4 s
+                    // delay missed results when starting with an empty/closed chat list.
+                    var readyTable: AXUIElement?
+                    var readyRow: AXUIElement?
+                    var stableMatches = 0
+                    for _ in 0..<40 {
+                        Thread.sleep(forTimeInterval: 0.15)
+                        try ensureCurrent()
+                        guard let currentMain = mainWindow(),
+                              ChatParser.matches(text(search, kAXValueAttribute), target: name),
+                              let table = find(currentMain, role: kAXTableRole) else {
+                            stableMatches = 0; continue
+                        }
+                        let rows = value(table, kAXRowsAttribute) as? [AXUIElement] ?? children(table)
+                        let matches = rows.filter { row in
+                            text(row, kAXRoleAttribute) == kAXRowRole && rowName(row).map { ChatParser.matches($0, target: name) } == true
+                        }
+                        guard matches.count == 1, let row = matches.first else {
+                            stableMatches = 0; continue
+                        }
+                        stableMatches += 1
+                        if stableMatches >= 3 { readyTable = table; readyRow = row; break }
+                    }
+                    guard let table = readyTable, let row = readyRow else {
+                        throw Failure(message: "검색 결과에서 ‘\(name)’ 방 하나를 확인하지 못했어요. 카톡 검색 결과를 확인해 주세요.")
                     }
                     guard AXUIElementSetAttributeValue(table, kAXSelectedRowsAttribute as CFString, [row] as CFArray) == .success,
                           AXUIElementSetAttributeValue(table, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else {
