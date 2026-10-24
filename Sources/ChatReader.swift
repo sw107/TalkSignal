@@ -8,7 +8,7 @@ final class ChatReader {
     private var paused: SignalState?
 
     func stop() { database.stop() }
-    func retry() { paused = nil; failedSearches = 0 }
+    func retry() { database.releaseConnection(); paused = nil; failedSearches = 0 }
 
     static func state(for rooms: [RoomUnread]) -> SignalState {
         guard !rooms.isEmpty else { return .missing }
@@ -34,6 +34,7 @@ final class ChatReader {
             failedSearches = 0
             return Self.state(for: rooms)
         } catch let error as UnreadError {
+            database.releaseConnection()
             if error == .access { return .permission }
             let state = SignalState.failure(error.message)
             // Bound expensive discovery attempts; permission/transient query failures retry automatically.
@@ -44,6 +45,6 @@ final class ChatReader {
                 paused = state
             }
             return state
-        } catch { return .unavailable }
+        } catch { database.releaseConnection(); return .unavailable }
     }
 }

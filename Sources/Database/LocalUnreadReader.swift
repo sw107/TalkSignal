@@ -39,6 +39,7 @@ func unreadAuthorizer(_ context: UnsafeMutableRawPointer?, _ action: Int32,
                       _ database: UnsafePointer<CChar>?, _ trigger: UnsafePointer<CChar>?) -> Int32 {
     if action == SQLITE_SELECT { return SQLITE_OK }
     if action == SQLITE_TRANSACTION { return SQLITE_OK } // read snapshot, no write operations allowed
+    if action == SQLITE_PRAGMA, first.map({ String(cString: $0).lowercased() }) == "data_version", second == nil { return SQLITE_OK }
     // SQLite's INTEGER PRIMARY KEY scan also requests a table-row visit with
     // an empty column and nil database. This grants no extra value columns.
     if action == SQLITE_READ, first.map({ String(cString: $0) }) == "NTChatContext",
@@ -61,6 +62,9 @@ final class LocalUnreadReader {
     private var identitySearchHash = ""
     private let cancelLock = NSLock()
     private var stopped = false
+    private let session = ReadOnlySession()
+
+    func releaseConnection() { session.reset() }
 
     func stop() { cancelLock.lock(); stopped = true; cancelLock.unlock() }
     func resume() { cancelLock.lock(); stopped = false; cancelLock.unlock() }
@@ -147,26 +151,25 @@ final class LocalUnreadReader {
             guard targetBytes.count == 64 else { throw UnreadError.identity }
             progress("이 Mac의 계정 식별값 확인 중… · 창을 열거나 서버에 접속하지 않아요")
             let deadline = Date().addingTimeInterval(90)
-            let workers = min(4, ProcessInfo.processInfo.activeProcessorCount)
-            let chunk = 1_000_000
+            // Avoid a four-core startup burst. No identifier/key is persisted to disk.
+            let chunk = 250_000
             let upperBound = 2_000_000_000
+            var lastProgress = Date.distantPast
             while identitySearchStart < upperBound {
                 try checkCancellation()
                 let start = identitySearchStart
-                let foundLock = NSLock()
-                var found: UInt64?
-                DispatchQueue.concurrentPerform(iterations: workers) { worker in
-                    let begin = min(start + worker * chunk, upperBound)
-                    let end = min(begin + chunk, upperBound)
-                    let value = targetBytes.withUnsafeBufferPointer { bytes in
-                        ts_scan_identity(UInt64(begin), UInt64(end), bytes.baseAddress)
-                    }
-                    if value != UInt64.max { foundLock.lock(); found = value; foundLock.unlock() }
+                let end = min(start + chunk, upperBound)
+                let found = targetBytes.withUnsafeBufferPointer { bytes in
+                    ts_scan_identity(UInt64(start), UInt64(end), bytes.baseAddress)
                 }
-                identitySearchStart = min(start + workers * chunk, upperBound)
-                if let found { ids.insert(Int(found)); break }
-                let percent = identitySearchStart * 100 / upperBound
-                progress("계정 식별값 확인 중… 탐색 범위 \(percent)% · 일시적으로 최대 \(workers)개 CPU 코어 사용")
+                identitySearchStart = end
+                if found != UInt64.max { ids.insert(Int(found)); break }
+                Thread.sleep(forTimeInterval: 0.03) // yield between bounded background chunks
+                if Date().timeIntervalSince(lastProgress) >= 2 {
+                    lastProgress = Date()
+                    let percent = identitySearchStart * 100 / upperBound
+                    progress("계정 식별값 확인 중… 탐색 범위 \(percent)% · 절전 준비 중")
+                }
                 if Date() > deadline {
                     diagnostics["identitySearchNeedsMoreTime"] = true
                     throw UnreadError.identity
@@ -352,6 +355,7 @@ final class LocalUnreadReader {
         try checkCancellation()
         let marker = try currentAccountMarker()
         if marker != accountMarker {
+            session.reset()
             dbPath = nil
             key = nil
             identitySearchStart = 1
@@ -360,10 +364,9 @@ final class LocalUnreadReader {
         }
         if dbPath == nil { try discover(progress: progress) }
         try checkCancellation()
-        let db = try open()
-        defer { sqlite3_close(db) }
-        let rooms = try Self.queryRooms(db, target: target)
-        guard try currentAccountMarker() == marker else { throw UnreadError.query }
+        guard let dbPath else { throw UnreadError.noDatabase }
+        let rooms = try session.read(path: dbPath, target: target) { try self.open() }
+        guard try currentAccountMarker() == marker else { session.reset(); throw UnreadError.query }
         return rooms
     }
 }

@@ -174,7 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var state: SignalState = .checking
     private var settings: SettingsController?
     private var timer: Timer?
-    private let queue = DispatchQueue(label: "TalkSignal.database", qos: .utility)
+    private let queue = DispatchQueue(label: "TalkSignal.database", qos: .background)
     private let reader = ChatReader()
     private var busy = false
     private var generation = 0
@@ -192,7 +192,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(appearanceChanged),
             name: NSNotification.Name("AppleInterfaceThemeChangedNotification"), object: nil)
         render()
-        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.poll() }
+        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.poll() }
+        timer?.tolerance = 1
         poll()
         if preferences.target.isEmpty || !FileAccess.shared.configured { openSettings() }
     }
@@ -219,10 +220,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 self.busy = false
                 guard version == self.generation else { self.poll(); return }
-                self.state = result
                 self.lastCheck = Date()
-                self.settings?.update(result)
-                self.render()
+                if self.state != result {
+                    self.state = result
+                    self.settings?.update(result)
+                    self.render()
+                }
             }
         }
     }
@@ -287,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = item.button else { return }
         let event = NSApp.currentEvent
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            render() // refresh the last-check time only when the menu is actually opened
             // Keep the primary action attached while the menu is being displayed.
             statusMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
         } else {

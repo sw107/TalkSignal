@@ -28,6 +28,7 @@ struct CoreTests {
             check(!FileAccess.valid(FileAccess.userHome.appendingPathComponent("Documents"), for: location), "reject unrelated folder grants")
         }
         try runUnreadSelfTests()
+        try runEnergyTests()
         print("PASS: \(checks) name/state checks")
     }
 }
