@@ -9,6 +9,7 @@ final class FileAccess {
     private let defaults: UserDefaults
     private let lock = NSLock()
     private let keyPrefix = "readonlyBookmark."
+    private var resolved: [Location: (data: Data, url: URL)] = [:]
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
     static var userHome: URL {
         guard let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir else {
@@ -41,6 +42,7 @@ final class FileAccess {
         }
         lock.lock(); defer { lock.unlock() }
         for (location, data) in values { defaults.set(data, forKey: keyPrefix + location.rawValue) }
+        resolved.removeAll()
     }
     func withReadAccess<T>(_ body: () throws -> T) throws -> T {
         lock.lock()
@@ -50,16 +52,26 @@ final class FileAccess {
         defer { for url in accessed.reversed() { url.stopAccessingSecurityScopedResource() } }
         for (location, data) in stored {
             guard let data else { throw UnreadError.access }
+            lock.lock(); let cached = resolved[location]; lock.unlock()
+            let url: URL
             var stale = false
-            let url = try URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI],
+            if let cached, cached.data == data { url = cached.url }
+            else {
+                url = try URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI],
                               relativeTo: nil, bookmarkDataIsStale: &stale)
+            }
             guard Self.valid(url, for: location), url.startAccessingSecurityScopedResource() else { throw UnreadError.access }
             accessed.append(url)
+            var cacheData = data
             if stale {
                 let renewed = try url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
                                                    includingResourceValuesForKeys: nil, relativeTo: nil)
                 lock.lock(); defaults.set(renewed, forKey: keyPrefix + location.rawValue); lock.unlock()
+                cacheData = renewed
             }
+            // Cache only URL resolution. Revalidate the exact path and acquire/release
+            // its existing read-only security scope for every read, including cache hits.
+            lock.lock(); resolved[location] = (cacheData, url); lock.unlock()
         }
         return try body()
     }

@@ -56,6 +56,7 @@ final class LocalUnreadReader {
     private(set) var diagnostics: [String: Any] = [:]
     private let base = FileAccess.kakaoLibrary
     private var accountMarker: [String]?
+    private let markerReader = AccountMarkers()
     private var dbPath: String?
     private var key: String? // In-memory only, never arguments, report, log or disk.
     private var identitySearchStart = 1
@@ -333,23 +334,7 @@ final class LocalUnreadReader {
     // Observe account markers so a running app does not keep using a previous account's key.
     // Values remain in memory. No message or authentication-token fields are inspected.
     private func currentAccountMarker() throws -> [String] {
-        let urls: [URL]
-        do { urls = try FileManager.default.contentsOfDirectory(at: base.appendingPathComponent("Preferences"), includingPropertiesForKeys: nil) }
-        catch { throw UnreadError.access }
-        var markers: [String] = []
-        for url in urls where url.resolvingSymlinksInPath().path == url.standardizedFileURL.path && url.lastPathComponent.hasPrefix("com.kakao.KakaoTalkMac") && url.pathExtension == "plist" {
-            let data: Data
-            do { data = try Data(contentsOf: url) } catch { throw UnreadError.access }
-            guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { throw UnreadError.query }
-            for (name, value) in plist where name.hasPrefix("DESIGNATEDFRIENDSREVISION:") {
-                if let revision = value as? NSNumber, revision.intValue != 0 { markers.append(name) }
-            }
-            for name in ["userId", "user_id", "KAKAO_USER_ID", "userID"] {
-                if let value = plist[name] as? NSNumber { markers.append(name + ":" + value.stringValue) }
-                else if let value = plist[name] as? String { markers.append(name + ":" + value) }
-            }
-        }
-        return Array(Set(markers)).sorted()
+        try markerReader.read(folder: base.appendingPathComponent("Preferences"))
     }
     func read(target: String, progress: @escaping (String) -> Void) throws -> [RoomUnread] {
         try checkCancellation()

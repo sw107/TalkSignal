@@ -7,6 +7,34 @@ func runEnergyTests() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
+    let prefs = directory.appendingPathComponent("Preferences")
+    try FileManager.default.createDirectory(at: prefs, withIntermediateDirectories: true)
+    let pref = prefs.appendingPathComponent("com.kakao.KakaoTalkMac.plist")
+    func writePref(_ id: Int) throws {
+        let bytes = try PropertyListSerialization.data(fromPropertyList: ["userId": id], format: .binary, options: 0)
+        try bytes.write(to: pref, options: .atomic)
+    }
+    let markers = AccountMarkers()
+    try writePref(101)
+    try require(markers.read(folder: prefs) == ["userId:101"])
+    for _ in 0..<20 { _ = try markers.read(folder: prefs) }
+    require(markers.parseCount == 1, "unchanged preferences must not be reparsed")
+    try writePref(202)
+    try require(markers.read(folder: prefs) == ["userId:202"], "atomic replacement must change account")
+    let bytes = try PropertyListSerialization.data(fromPropertyList: ["userId": 303], format: .binary, options: 0)
+    try bytes.write(to: pref)
+    try require(markers.read(folder: prefs) == ["userId:303"], "in-place same-size write must change account")
+    try Data("malformed".utf8).write(to: pref)
+    do { _ = try markers.read(folder: prefs); preconditionFailure("malformed preferences must not reuse account") }
+    catch UnreadError.query { }
+    try FileManager.default.removeItem(at: pref)
+    try require(markers.read(folder: prefs).isEmpty, "deleted preference must remove account")
+    let elsewhere = directory.appendingPathComponent("unselected.plist")
+    try bytes.write(to: elsewhere)
+    try FileManager.default.createSymbolicLink(at: pref, withDestinationURL: elsewhere)
+    do { _ = try markers.read(folder: prefs); preconditionFailure("symlink must be rejected") }
+    catch UnreadError.access { }
+    print("PASS: unchanged preference reuse; account replacement, in-place edit, malformed, deletion and symlink invalidation")
     let path = directory.appendingPathComponent("synthetic.db").path
     func exec(_ db: OpaquePointer, _ sql: String) {
         precondition(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK, "fixture SQL failed")

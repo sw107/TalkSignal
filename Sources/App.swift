@@ -174,7 +174,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var state: SignalState = .checking
     private var settings: SettingsController?
     private var timer: Timer?
-    private let queue = DispatchQueue(label: "TalkSignal.database", qos: .background)
+    // Utility work has a user-visible result. Background QoS made initial discovery
+    // take several minutes; bounded single-thread work still avoids four-core bursts.
+    private let queue = DispatchQueue(label: "TalkSignal.database", qos: .utility)
     private let reader = ChatReader()
     private var busy = false
     private var generation = 0
