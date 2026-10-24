@@ -57,6 +57,8 @@ final class LocalUnreadReader {
     private let base = FileAccess.kakaoLibrary
     private var accountMarker: [String]?
     private let markerReader = AccountMarkers()
+    private let identityCache = IdentityCache()
+    private var pendingCacheID: Int?
     private var dbPath: String?
     private var key: String? // In-memory only, never arguments, report, log or disk.
     private var identitySearchStart = 1
@@ -142,6 +144,12 @@ final class LocalUnreadReader {
         guard hashes.count <= 1 else { throw UnreadError.ambiguousAccount }
         diagnostics["activeAccountHashes"] = hashes.count
         if let hash = hashes.first { ids = Set(ids.filter { sha512($0) == hash }) }
+        if ids.isEmpty, let hash = hashes.first,
+           let cached = identityCache.load(matching: hash, digest: sha512) {
+            ids.insert(cached)
+            diagnostics["identityCacheHit"] = true
+            progress("저장된 계정 정보 확인 중…")
+        }
         diagnostics["candidateAccountValues"] = ids.count
         if ids.isEmpty, let hash = hashes.first {
             if hash != identitySearchHash { identitySearchHash = hash; identitySearchStart = 1 }
@@ -152,7 +160,7 @@ final class LocalUnreadReader {
             guard targetBytes.count == 64 else { throw UnreadError.identity }
             progress("이 Mac의 계정 식별값 확인 중… · 창을 열거나 서버에 접속하지 않아요")
             let deadline = Date().addingTimeInterval(90)
-            // Avoid a four-core startup burst. No identifier/key is persisted to disk.
+            // Cache miss only: bounded single-thread discovery; no process memory access.
             let chunk = 250_000
             let upperBound = 2_000_000_000
             var lastProgress = Date.distantPast
@@ -194,6 +202,8 @@ final class LocalUnreadReader {
         diagnostics["databasePathMatched"] = true
         dbPath = candidate.0
         key = KeyDerivation.secureKey(userId: candidate.1, uuid: uuid)
+        // Store only after an actual read succeeds and account markers are rechecked.
+        if hashes.count == 1, diagnostics["identityCacheHit"] as? Bool != true { pendingCacheID = candidate.1 }
     }
     private func open() throws -> OpaquePointer {
         guard let dbPath, let key else { throw UnreadError.identity }
@@ -341,6 +351,8 @@ final class LocalUnreadReader {
         let marker = try currentAccountMarker()
         if marker != accountMarker {
             session.reset()
+            pendingCacheID = nil
+            diagnostics["identityCacheHit"] = false
             dbPath = nil
             key = nil
             identitySearchStart = 1
@@ -352,6 +364,10 @@ final class LocalUnreadReader {
         guard let dbPath else { throw UnreadError.noDatabase }
         let rooms = try session.read(path: dbPath, target: target) { try self.open() }
         guard try currentAccountMarker() == marker else { session.reset(); throw UnreadError.query }
+        if let id = pendingCacheID {
+            diagnostics["identityCacheSaved"] = identityCache.save(verified: id)
+            pendingCacheID = nil // Never retry keychain operations on every poll.
+        }
         return rooms
     }
 }

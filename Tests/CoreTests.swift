@@ -27,6 +27,12 @@ struct CoreTests {
             check(!FileAccess.valid(expected.deletingLastPathComponent(), for: location), "reject broader folder grants")
             check(!FileAccess.valid(FileAccess.userHome.appendingPathComponent("Documents"), for: location), "reject unrelated folder grants")
         }
+        let syntheticDigest: (Int) -> String = { "synthetic-\($0)" }
+        check(IdentityCache.validated(Data("123".utf8), matching: "synthetic-123", digest: syntheticDigest) == 123, "matching account cache")
+        check(IdentityCache.validated(Data("123".utf8), matching: "synthetic-456", digest: syntheticDigest) == nil, "different account cache rejected")
+        for invalid in ["", "0", "-1", "00123", "123\n", "abc", String(repeating: "9", count: 30)] {
+            check(IdentityCache.validated(Data(invalid.utf8), matching: "synthetic-123", digest: syntheticDigest) == nil, "invalid account cache rejected")
+        }
         try runUnreadSelfTests()
         try runEnergyTests()
         print("PASS: \(checks) name/state checks")

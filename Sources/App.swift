@@ -360,11 +360,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct TalkSignal {
     static func main() {
-        if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--probe" {
+        if CommandLine.arguments.dropFirst().first == "--probe-saved" || (CommandLine.arguments.count >= 3 && CommandLine.arguments[1] == "--probe") {
+            let target = CommandLine.arguments[1] == "--probe-saved" ? Preferences.load().target : CommandLine.arguments[2]
             let reader = ChatReader()
             for _ in 0..<2 {
                 let start = Date()
-                let state = reader.read(target: CommandLine.arguments[2])
+                let state = reader.read(target: target)
                 let output: [String: Any] = ["state": state.message, "seconds": Date().timeIntervalSince(start)]
                 let data = try! JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
                 print(String(decoding: data, as: UTF8.self))
